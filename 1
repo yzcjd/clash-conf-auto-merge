@@ -1,0 +1,124 @@
+```javascript
+/*
+ * clash-sub-worker.js
+ *
+ * This script is a JavaScript Worker that adds or removes proxy nodes from a Clash subscription link,
+ * removes a specific DNS server, updates proxy-groups URL, and adds remote rules.
+ */
+// 引入 Base64 编码/解码库
+const base64 = require('./base64');
+// 引入 YAML 解析库
+const yaml = require('js-yaml');
+
+/**
+ * 解码 Clash 订阅链接。
+ * @param {string} url - 订阅链接。
+ * @returns {Promise<object>} - 解码后的订阅内容对象 (包含 proxies, rules 等字段)。
+ */
+async function decodeSubscription(url) {
+  try {
+    const response = await fetch(url);
+    const content = await response.text();
+    if (url.endsWith(".yaml") || url.endsWith(".yml")) {
+      return yaml.load(content);
+    } else if (base64.isBase64(content)) {
+      return yaml.load(base64.decode(content)); // 假设 Base64 解码后也是 YAML 格式
+    } else {
+      // 处理其他格式的订阅链接 (例如 URL 或 Clash 配置文件)
+      // ... 根据实际情况添加解析逻辑 ...
+      throw new Error("Unsupported subscription format");
+    }
+  } catch (error) {
+    self.postMessage({ error: 'Failed to decode subscription: ' + error.message });
+  }
+}
+
+/**
+ * 编码 Clash 订阅链接。
+ * @param {object} config - Clash 配置对象。
+ * @param {string} type - 编码类型（'base64' 或 'yaml'）。
+ * @returns {string} - 编码后的订阅链接。
+ */
+function encodeSubscription(config, type) {
+  const yamlContent = yaml.dump(config);
+  if (type === 'base64') {
+    return base64.encode(yamlContent);
+  } else if (type === 'yaml') {
+    return yamlContent;
+  } else {
+    throw new Error("Unsupported encoding type");
+  }
+}
+
+/**
+ * 删除指定的 DNS 服务器。
+ * @param {object} config - Clash 配置对象。
+ * @param {string} dnsToRemove - 要删除的 DNS 服务器地址。
+ */
+function removeDns(config, dnsToRemove) {
+  if (config.dns && config.dns.nameserver) {
+    config.dns.nameserver = config.dns.nameserver.filter(dns => dns !== dnsToRemove);
+  }
+}
+
+/**
+ * 更新 proxy-groups 的 URL。
+ * @param {object} config - Clash 配置对象。
+ * @param {string} newUrl - 新的 URL。
+ */
+function updateProxyGroupsUrl(config, newUrl) {
+  if (config['proxy-groups']) {
+    config['proxy-groups'].forEach(group => {
+      if (group.url) {
+        group.url = newUrl;
+      }
+    });
+  }
+}
+
+/**
+ * 添加远程规则。
+ * @param {object} config - Clash 配置对象。
+ * @param {string} remoteRulesUrl - 远程规则 URL。
+ */
+async function addRemoteRules(config, remoteRulesUrl) {
+  try {
+    const response = await fetch(remoteRulesUrl);
+    const rules = await response.text();
+    if (config.rules) {
+      config.rules.push(`- RULE-SET: ${remoteRulesUrl}, DIRECT`);
+    } else {
+      config.rules = [`- RULE-SET: ${remoteRulesUrl}, DIRECT`];
+    }
+  } catch (error) {
+    self.postMessage({ error: 'Failed to fetch remote rules: ' + error.message });
+  }
+}
+
+// 监听消息事件
+self.addEventListener('message', async function (event) {
+  const { url, type, payload } = event.data;
+  try {
+    // 解码订阅链接
+    const config = await decodeSubscription(url);
+    // 删除 223.5.5.5 DNS
+    removeDns(config, '223.5.5.5');
+    // 更新 proxy-groups URL
+    updateProxyGroupsUrl(config, 'https://api.v2fly.org/checkConnection.svgz');
+    // 添加远程规则
+    await addRemoteRules(config, 'https://raw.githubusercontent.com/yzcjd/proxy-rules/main/clash.cool.ini');
+    // 根据操作类型添加或删除节点 (如果需要)
+    if (type === 'add') {
+      // ... 添加节点逻辑 ...
+    } else if (type === 'remove') {
+      // ... 删除节点逻辑 ...
+    }
+    // 编码更新后的订阅链接
+    const updatedUrl = encodeSubscription(config, 'yaml'); // 或 'base64'
+    // 将更新后的订阅链接发送回主线程
+    self.postMessage({ url: updatedUrl });
+  } catch (error) {
+    self.postMessage({ error: 'Failed to process subscription: ' + error.message });
+  }
+});
+```
